@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "fourmp"
+version = "0.1.0"
+description = "4MP simulation application"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "fourmp", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+numpy = "^2.5.1"
+matplotlib = "^3.11.0"
+scipy = "^1.18.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.2"
+ruff = "^0.6.4"
+
+[tool.poetry.scripts]
+"4mp" = "fourmp.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
