@@ -23,6 +23,18 @@ back-projected camera ray -- exactly the geometric picture this produces.
 Rays are all fired from the same projector optical center (only direction
 varies by mirror), so the whole scan is one vectorized ray-mesh intersection
 call rather than 1600 x 2716 individual calls.
+
+**V1.1 sub-pixel fix:** the camera records *both* the continuous projected
+(i, j) and the nearest discrete pixel address. The real sensor locates the
+imaged line to sub-pixel precision via centroid/peak-finding over the line's
+intensity profile; V1 has no photometric/PSF model yet to run a real
+estimator over, so the continuous projection stands in as a perfect,
+zero-error sub-pixel estimate (see sensor-sim-v1-spec.md's V1.1 section) --
+a deliberate placeholder, the same idealization pattern as binary intensity
+standing in for a real BRDF. The discrete address is kept alongside purely
+for bookkeeping (e.g. collision detection between scan steps landing on the
+same physical camera pixel); the continuous value is what actually feeds
+triangulation (see reconstruction.py).
 """
 
 from __future__ import annotations
@@ -50,8 +62,10 @@ class ScanData:
 
     step: np.ndarray  # (n_hits,) int, scan-step / projector i-index, 0..1599
     mirror: np.ndarray  # (n_hits,) int, projector j-index, 0..2715
-    cam_i: np.ndarray  # (n_hits,) int, camera baseline-axis pixel row, 0..3103
-    cam_j: np.ndarray  # (n_hits,) int, camera line-axis pixel column, 0..5327
+    cam_i: np.ndarray  # (n_hits,) int, discrete/recorded camera pixel row -- bookkeeping only
+    cam_j: np.ndarray  # (n_hits,) int, discrete/recorded camera pixel column -- bookkeeping only
+    cam_i_continuous: np.ndarray  # (n_hits,) float, sub-pixel camera row -- feeds triangulation
+    cam_j_continuous: np.ndarray  # (n_hits,) float, sub-pixel camera column -- feeds triangulation
 
     def __len__(self) -> int:
         return len(self.step)
@@ -83,15 +97,24 @@ def run_measurement(
     locations, hit = nearest_intersection(projector.center, directions, part_mesh)
 
     if not hit.any():
-        empty = np.array([], dtype=int)
-        return ScanData(step=empty, mirror=empty, cam_i=empty, cam_j=empty)
+        empty_int = np.array([], dtype=int)
+        empty_float = np.array([], dtype=float)
+        return ScanData(
+            step=empty_int,
+            mirror=empty_int,
+            cam_i=empty_int,
+            cam_j=empty_int,
+            cam_i_continuous=empty_float,
+            cam_j_continuous=empty_float,
+        )
 
-    cam_i, cam_j = camera.pixel_indices(locations[hit])
-    valid = (cam_i >= 0) & (cam_j >= 0)
+    fi, fj, ii_disc, jj_disc, valid = camera.project_and_pixel_indices(locations[hit])
 
     return ScanData(
         step=ii_flat[hit][valid],
         mirror=jj_flat[hit][valid],
-        cam_i=cam_i[valid],
-        cam_j=cam_j[valid],
+        cam_i=ii_disc[valid],
+        cam_j=jj_disc[valid],
+        cam_i_continuous=fi[valid],
+        cam_j_continuous=fj[valid],
     )

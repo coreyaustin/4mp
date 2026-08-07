@@ -20,15 +20,37 @@ geometry, projector focal length, stage placement) were resolved.
   - `measurement.py` -- forward model.
   - `reconstruction.py` -- inverse model.
   - `validation.py` -- ground-truth sampling + pointwise/spectral metrics.
+  - `report.py` -- plots + JSON report writer for the CLI.
+- `src/fourmp/cli.py` -- the `4mp` command.
+- `input/` -- put the STL parts you want to scan here (not tracked in git --
+  see `input/README.md`).
+- `output/` -- per-run reports/height maps/plots land here, one subdirectory
+  per part (not tracked in git -- see `output/README.md`).
 - `tests/sensor_sim/` -- unit tests plus the end-to-end V1 milestone test
   (`test_v1_milestone.py`).
-- `tests/data/cube_100mm.stl` -- generated test part (see `fixtures.py`).
+- `tests/data/cube_100mm.stl` -- generated test fixture (see `fixtures.py`),
+  separate from `input/`'s user-facing example copy.
 
 ## Setup
 
 ```bash
 poetry install
 ```
+
+## Scanning a part
+
+```bash
+# generate an example part to scan, if you don't have one yet
+poetry run python -m fourmp.sensor_sim.fixtures --out input/cube_100mm.stl
+
+# scan it -- looks up input/cube_100mm.stl by name, or pass a path directly
+poetry run 4mp cube_100mm
+```
+
+Writes `output/cube_100mm/`: `height_map.npy`/`.png`, `ground_truth.npy`/
+`.png`, `residual.png`, and `report.json` (metrics + run metadata). Run
+`poetry run 4mp --help` for the full option list (face-normal selection,
+scan-resolution striding, custom input/output directories).
 
 ## Tests
 

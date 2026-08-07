@@ -3,8 +3,14 @@
 one cube face, one pose, idealized sensor model (binary-intensity inverse-
 pinhole projector + tilted-pinhole camera, full confirmed resolution -- 1600
 scan steps x 2716 mirrors/line, 5328x3104 camera) -> measure -> reconstruct
--> compare against ground truth sampled directly from the same posed mesh,
-using both pointwise (RMS/max) and spectral metrics.
+-> regrid onto a physical XY grid (mm) -> compare against ground truth
+sampled directly on that same grid, using both pointwise (RMS/max) and
+spectral metrics.
+
+V1.1 update: sub-pixel reconstruction (project_points(), not rounded
+pixel_indices()) plus physical-grid regridding collapse the pointwise
+residual to floating-point noise and remove the camera-pixel-native
+trapezoid/keystone artifact -- both checked below.
 """
 
 import numpy as np
@@ -12,12 +18,14 @@ import numpy as np
 from fourmp.sensor_sim.measurement import run_measurement
 from fourmp.sensor_sim.part import load_part
 from fourmp.sensor_sim.reconstruction import run_reconstruction
-from fourmp.sensor_sim.validation import ground_truth_like, pointwise_residual, spectral_residual
+from fourmp.sensor_sim.regrid import regrid_reconstruction_and_truth
+from fourmp.sensor_sim.validation import pointwise_residual, spectral_residual
 
-# The only error source in this idealized model is camera-pixel quantization
-# (see reconstruction.py) -- sub-pixel-scale, so these are deliberately tight.
-MAX_ALLOWED_RMS_MM = 0.2
-MAX_ALLOWED_PEAK_MM = 1.0
+# V1.1's only remaining error source is floating-point arithmetic -- the
+# sub-pixel fix removes camera-pixel quantization, the regrid removes the
+# keystone artifact. These thresholds are deliberately tight.
+MAX_ALLOWED_RMS_MM = 1e-6
+MAX_ALLOWED_PEAK_MM = 1e-5
 
 
 def test_v1_cube_face_measure_reconstruct_validate(sensor_config, cube_stl_path):
@@ -27,30 +35,27 @@ def test_v1_cube_face_measure_reconstruct_validate(sensor_config, cube_stl_path)
     assert len(scan) > 0, "measurement engine produced no hits at all"
 
     result = run_reconstruction(scan, sensor_config)
-    n_reconstructed = int(np.sum(~np.isnan(result.height_map)))
-    assert n_reconstructed > 0
+    assert len(result.heights) > 0
 
-    truth = ground_truth_like(part.mesh, sensor_config, result.height_map)
+    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(result, part.mesh, sensor_config)
 
-    pointwise = pointwise_residual(result.height_map, truth)
-    assert pointwise.n_compared > 0.9 * n_reconstructed, (
-        "most reconstructed pixels should have a ground-truth counterpart "
-        "for a flat, fully-visible face"
-    )
+    # The V1.1 keystone fix: a square physical face should regrid to an
+    # (approximately) square array on physical XY axes, not the skewed
+    # trapezoid the camera-pixel-native grid produced.
+    n_rows, n_cols = grid.shape
+    assert abs(n_rows - n_cols) / max(n_rows, n_cols) < 0.05, grid.shape
+
+    pointwise = pointwise_residual(recon_grid, truth_grid)
+    assert pointwise.n_compared > 0, "no overlap between reconstruction and ground truth grids"
     assert pointwise.rms_mm < MAX_ALLOWED_RMS_MM, pointwise
     assert pointwise.max_mm < MAX_ALLOWED_PEAK_MM, pointwise
 
-    spectral = spectral_residual(result.height_map, truth)
-    # No hard threshold on the spectral shape metrics here (there's no
-    # "correct" reference value to gate on for a single idealized flat-face
-    # run) -- just assert the metric is well-formed, i.e. actually computed a
-    # finite power spectrum over a sensibly-sized cropped region.
+    spectral = spectral_residual(recon_grid, truth_grid)
     assert spectral.shape[0] > 0 and spectral.shape[1] > 0
     assert np.isfinite(spectral.total_power_mm2)
 
     print(
-        f"\nV1 milestone: {n_reconstructed} px reconstructed, "
-        f"RMS={pointwise.rms_mm:.4f}mm, max={pointwise.max_mm:.4f}mm, "
-        f"spectral peak/mean={spectral.peak_to_mean_power_ratio:.1f}, "
-        f"low-freq fraction={spectral.low_frequency_power_fraction:.3f}"
+        f"\nV1.1 milestone: grid {grid.shape[1]}x{grid.shape[0]} @ {grid.resolution_mm * 1000:.1f}um, "
+        f"{pointwise.n_compared} cells compared, "
+        f"RMS={pointwise.rms_mm:.3e}mm, max={pointwise.max_mm:.3e}mm"
     )

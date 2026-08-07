@@ -16,7 +16,6 @@ eggs/
 .eggs/
 lib/
 lib64/
-parts/
 sdist/
 var/
 wheels/
@@ -216,3 +215,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# fourmp: user-supplied part geometry and generated run outputs.
+# Both are ignored by default -- input STLs may be real product/customer
+# geometry, and outputs are derived from them -- so nothing lands in git
+# unless explicitly force-added. The README.md in each directory (kept
+# tracked) is what makes the directory itself show up for a fresh clone.
+/input/*
+!/input/README.md
+/output/*
+!/output/README.md

@@ -18,6 +18,14 @@ def test_run_measurement_hits_the_posed_face(sensor_config, cube_stl_path):
     assert scan.cam_j.min() >= 0
     assert scan.cam_j.max() < sensor_config.camera.n_j
 
+    # Continuous sub-pixel values should be finite and agree with their
+    # rounded discrete counterpart to within half a pixel (that's the
+    # definition of "nearest" rounding).
+    assert np.all(np.isfinite(scan.cam_i_continuous))
+    assert np.all(np.isfinite(scan.cam_j_continuous))
+    assert np.abs(scan.cam_i_continuous - scan.cam_i).max() <= 0.5 + 1e-9
+    assert np.abs(scan.cam_j_continuous - scan.cam_j).max() <= 0.5 + 1e-9
+
 
 def test_run_measurement_no_hits_when_face_moved_out_of_range(sensor_config, cube_stl_path):
     part = load_part(cube_stl_path, sensor_config, face_normal_hint=(1.0, 0.0, 0.0))

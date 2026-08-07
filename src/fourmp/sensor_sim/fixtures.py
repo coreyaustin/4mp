@@ -14,6 +14,7 @@ needed to satisfy part.py's "+Y is up" convention -- it holds by construction.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import trimesh
@@ -33,6 +34,22 @@ def write_test_cube(path: str | Path, side_mm: float = DEFAULT_CUBE_SIDE_MM) -> 
     return path
 
 
-if __name__ == "__main__":
-    out = write_test_cube(Path(__file__).resolve().parents[3] / "tests" / "data" / "cube_100mm.stl")
+def _default_out_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "tests" / "data" / "cube_100mm.stl"
+
+
+def _main() -> None:
+    parser = argparse.ArgumentParser(description="Generate a cube STL test/example part.")
+    parser.add_argument(
+        "--out", type=Path, default=_default_out_path(), help="output STL path (default: %(default)s)"
+    )
+    parser.add_argument(
+        "--side-mm", type=float, default=DEFAULT_CUBE_SIDE_MM, help="cube side length in mm"
+    )
+    args = parser.parse_args()
+    out = write_test_cube(args.out, side_mm=args.side_mm)
     print(f"wrote {out}")
+
+
+if __name__ == "__main__":
+    _main()

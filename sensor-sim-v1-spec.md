@@ -139,3 +139,52 @@ re-derive it from the real schema later.
 - Exact camera FOV margin over the measurement area.
 - Final height-map grid origin/coordinate convention (pending the team's
   schema — using grid-center origin for now).
+
+## V1.1 — calibration fix (first-run findings, 2026-08-07)
+
+First run against the cube fixture (100mm cube, one face) reconstructed
+correctly geometrically (ground truth is flat to ~10 significant figures,
+confirming pose/triangulation math) but surfaced two follow-ups, both
+scoped as part of finishing V1 rather than deferred to Phase 2:
+
+1. **Regrid the height map onto a uniform physical XY grid (mm), not raw
+   camera-pixel indices.** The current camera-pixel-native grid makes a flat
+   rectangular face render as a trapezoid (an artifact of indexing by a
+   physically tilted camera's row/col, not a defect — it appears identically
+   in `ground_truth.png`), and it also means plots are labeled in pixels
+   instead of mm. Bin/interpolate the triangulated `(X, Y, Z)` points from
+   `reconstruction.py` onto a regular XY grid (e.g. resolution matched to the
+   ~60-70µm/pixel footprint at the reference plane) before producing
+   `height_map.npy`/`.png` and `ground_truth.npy`/`.png`. This single change
+   fixes both the trapezoid-shape artifact and the pixels-vs-mm plotting
+   request. Keep the current camera-pixel-native array available too (or
+   easily reproducible) since some diagnostics (e.g. the triangulation gap
+   map) are naturally expressed per-camera-pixel.
+
+2. **Reconstruct at sub-pixel resolution — drop nearest-pixel rounding as
+   the V1 camera model, not just a diagnostic.** The real sensor locates the
+   imaged line to sub-pixel resolution via a centroid/peak-finding algorithm
+   over the line's intensity profile; nearest-integer-pixel rounding
+   (`PinholeModel.pixel_indices()`'s `np.rint()`) was never a faithful model
+   of that — it was an incidental side effect, not a deliberate fidelity
+   choice, and it's the dominant driver of the ~25.5µm RMS / 46.7µm max
+   pointwise residual (same order of magnitude as `max_triangulation_gap_mm`
+   and the camera's pixel footprint at the reference plane). Since V1 has no
+   photometric/PSF model yet to run a real centroid estimator over, the
+   faithful V1 stand-in is a **perfect, zero-error sub-pixel estimate**:
+   reconstruct from the camera's continuous projected `(i, j)`
+   (`project_points()`) instead of the rounded integer output. This should
+   make the forward/inverse round trip geometrically exact again (residual
+   should collapse to floating-point noise).
+   - The camera's photosensitive array is still physically a discrete pixel
+     grid — sub-pixel centroiding doesn't eliminate that. Recommend keeping
+     a rounded/discrete "recorded pixel" address alongside the continuous
+     value, for bookkeeping only (collision detection between scan steps
+     landing on the same physical pixel, indexing into any camera-pixel-
+     native intermediate array) — but feed the **continuous** value into
+     `directions_for_indices()`/triangulation, not the rounded one.
+   - This is a placeholder the same way binary intensity is a placeholder
+     for a real BRDF model — a later fidelity phase should replace "perfect
+     centroid" with a realistic centroid-estimation error model (a function
+     of line width/PSF and per-pixel SNR) once the photometric side of the
+     sensor model exists. Not required for V1.1.

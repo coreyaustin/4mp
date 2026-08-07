@@ -720,6 +720,51 @@ referencing one, and no `src/fourmp/__init__.py` (works today via Python's
 implicit namespace packages, but worth an explicit one if `fourmp` grows
 sibling packages beyond `sensor_sim`).
 
+## V1.1 implementation notes (2026-08-07)
+
+Two fixes from the spec's "V1.1 — calibration fix" section, both implemented
+and verified against the cube fixture:
+
+**Sub-pixel reconstruction.** `measurement.py`'s `ScanData` now carries the
+camera's continuous projected `(i, j)` (`PinholeModel.project_points()`)
+alongside a rounded discrete pixel address kept only for bookkeeping
+(collision detection between scan steps landing on the same physical
+pixel). `reconstruction.py` triangulates from the continuous value. Effect
+on the cube fixture: pointwise RMS dropped from ~25.5um to ~2e-13mm (i.e.
+floating-point noise) -- confirming this, not a geometry bug, was the
+dominant V1.0 error source, exactly as the spec predicted.
+
+**Physical XY-grid regridding.** New `regrid.py`: bins the reconstruction's
+triangulated `(X, Y, Z)` points onto a uniform mm grid (resolution =
+`pixel_footprint_mm()`, the camera's own pixel footprint at the reference
+plane -- averaged across both axes since it varies slightly across the
+keystoned FOV, landing at ~66um for this sensor, matching the spec's
+~60-70um estimate). Ground truth is resampled directly on that same grid by
+casting a ray along the boresight (+Z) through each cell's (X, Y) into the
+true mesh -- not by back-projecting camera pixels, which would just
+reintroduce the keystone this change is meant to remove. Effect on the cube
+fixture: the reconstructed/ground-truth footprint went from a trapezoid
+(camera-pixel-native rows/cols) to a square within 5% of aspect ratio 1:1
+(physical mm), matching the true 100x100mm face.
+
+`raytrace.nearest_intersection()` needed generalizing to support both a
+shared origin/varying directions (projector and camera, unchanged) *and* a
+varying origin/shared direction (one ray per grid cell, ground-truth
+sampling) -- implemented via elementwise dot products instead of matrix
+multiplies, so it broadcasts correctly either way.
+
+The camera-pixel-native `height_map`/`triangulation_gap_mm` diagnostic view
+(`reconstruction.py`'s `HeightMapResult`) is kept alongside the new
+`points`/`heights`/`gaps` (full-precision, ungridded) fields, per the spec's
+note that some diagnostics are naturally per-camera-pixel; the CLI still
+plots the gap map (`triangulation_gap_map.png`) on that native grid.
+
+**Not implemented (explicitly deferred, per spec):** a realistic
+centroid-estimation error model. The perfect sub-pixel value used here is a
+placeholder standing in for a real centroid/peak-finding estimator over the
+line's intensity profile, exactly as binary intensity stands in for a real
+BRDF -- both wait on a photometric/PSF model that doesn't exist yet.
+
 ## Engine interface contracts (current scope)
 
 - Measurement engine: face (mesh + BRDF), already posed into sensor space

@@ -138,15 +138,26 @@ class PinholeModel:
         i, j = self.project_points(np.asarray(point)[None, :])
         return float(i[0]), float(j[0])
 
-    def pixel_indices(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Vectorized point -> nearest in-bounds integer (i, j), or (-1, -1)
-        (sentinel, not a valid index) where the point projects behind the
-        pinhole or outside the [0, n_i) x [0, n_j) array."""
+    def project_and_pixel_indices(
+        self, points: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Point -> continuous (i, j) *and* the nearest discrete pixel
+        address, computed together in one pass (avoids reprojecting when a
+        caller needs both -- see measurement.py, which triangulates from the
+        continuous value but records the discrete one for bookkeeping only,
+        per the V1.1 sub-pixel-reconstruction fix).
+
+        Returns (continuous_i, continuous_j, discrete_i, discrete_j, valid).
+        ``valid`` is False wherever the point projects behind the pinhole or
+        the discrete address falls outside [0, n_i) x [0, n_j) -- continuous_i/j
+        are NaN in the behind-the-pinhole case but may still be finite (just
+        out of array bounds) when only the discrete/bounds check fails.
+        """
         fi, fj = self.project_points(points)
         with np.errstate(invalid="ignore"):
             ii = np.rint(fi)
             jj = np.rint(fj)
-            in_bounds = (
+            valid = (
                 ~np.isnan(fi)
                 & ~np.isnan(fj)
                 & (ii >= 0)
@@ -154,6 +165,18 @@ class PinholeModel:
                 & (jj >= 0)
                 & (jj < self.n_j)
             )
-        ii_out = np.where(in_bounds, ii, -1).astype(int)
-        jj_out = np.where(in_bounds, jj, -1).astype(int)
+            # NaN -> int cast below is a well-defined (if meaningless) value
+            # for behind-the-pinhole points; `valid` is already False for
+            # those, so callers never look at the result.
+            ii_int = ii.astype(int)
+            jj_int = jj.astype(int)
+        return fi, fj, ii_int, jj_int, valid
+
+    def pixel_indices(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Vectorized point -> nearest in-bounds integer (i, j), or (-1, -1)
+        (sentinel, not a valid index) where the point projects behind the
+        pinhole or outside the [0, n_i) x [0, n_j) array."""
+        _fi, _fj, ii, jj, valid = self.project_and_pixel_indices(points)
+        ii_out = np.where(valid, ii, -1)
+        jj_out = np.where(valid, jj, -1)
         return ii_out, jj_out

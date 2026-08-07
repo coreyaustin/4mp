@@ -18,13 +18,20 @@ import trimesh
 def nearest_intersection(
     origin: np.ndarray, directions: np.ndarray, mesh: trimesh.Trimesh, eps: float = 1e-9
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Nearest ray-mesh intersection for a shared ray origin.
+    """Nearest ray-mesh intersection.
+
+    ``origin`` and ``directions`` broadcast against each other: either may be
+    a single (3,) vector (shared by every ray) or an (N, 3) array (one per
+    ray). The projector/camera fire many rays from one shared optical center
+    (constant origin, varying direction); ground-truth grid sampling fires
+    one ray per grid cell in a shared direction from a per-cell origin
+    (varying origin, constant direction). At least one of the two must be
+    (N, 3) so N is determined.
 
     Parameters
     ----------
-    origin : (3,) float -- single ray origin, shared by every ray (true for
-        both the projector and the camera in this sensor model).
-    directions : (N, 3) float -- unit ray directions.
+    origin : (3,) or (N, 3) float
+    directions : (3,) or (N, 3) float -- unit ray direction(s)
     mesh : trimesh.Trimesh
 
     Returns
@@ -34,27 +41,37 @@ def nearest_intersection(
     """
     origin = np.asarray(origin, dtype=float)
     directions = np.asarray(directions, dtype=float)
-    n_rays = directions.shape[0]
+
+    if origin.ndim == 2:
+        n_rays = origin.shape[0]
+    elif directions.ndim == 2:
+        n_rays = directions.shape[0]
+    else:
+        raise ValueError("at least one of origin/directions must be an (N, 3) array")
+
+    def _broadcast(a: np.ndarray) -> np.ndarray:
+        return np.broadcast_to(a, (n_rays,))
 
     best_t = np.full(n_rays, np.inf)
     hit = np.zeros(n_rays, dtype=bool)
 
     triangles = mesh.triangles  # (T, 3, 3)
     for v0, v1, v2 in triangles:
-        e1 = v1 - v0
-        e2 = v2 - v0
+        e1 = v1 - v0  # (3,)
+        e2 = v2 - v0  # (3,)
 
-        p = np.cross(directions, e2)  # (N, 3)
-        det = p @ e1  # (N,)
+        p = np.cross(directions, e2)  # (3,) or (N, 3)
+        det = _broadcast(np.sum(p * e1, axis=-1))  # (N,)
         parallel = np.abs(det) < eps
-        inv_det = np.divide(1.0, det, out=np.full_like(det, np.nan), where=~parallel)
+        inv_det = np.full(n_rays, np.nan)
+        np.divide(1.0, det, out=inv_det, where=~parallel)
 
-        t_vec = origin - v0  # (3,)
-        u = (p @ t_vec) * inv_det
+        t_vec = origin - v0  # (3,) or (N, 3)
+        u = _broadcast(np.sum(p * t_vec, axis=-1)) * inv_det
 
-        q = np.cross(t_vec, e1)  # (3,)
-        v = (directions @ q) * inv_det
-        t = (e2 @ q) * inv_det
+        q = np.cross(t_vec, e1)  # (3,) or (N, 3)
+        v = _broadcast(np.sum(directions * q, axis=-1)) * inv_det
+        t = _broadcast(np.sum(e2 * q, axis=-1)) * inv_det
 
         valid = (
             ~parallel & (u >= -eps) & (u <= 1 + eps) & (v >= -eps) & (u + v <= 1 + eps) & (t > eps)
@@ -63,5 +80,11 @@ def nearest_intersection(
         best_t = np.where(better, t, best_t)
         hit = hit | better
 
-    locations = np.where(hit[:, None], origin[None, :] + best_t[:, None] * directions, np.nan)
+    with np.errstate(invalid="ignore"):
+        # best_t is +inf for missed rays -- inf * direction is a harmless NaN/inf
+        # that np.where immediately discards in favor of the np.nan branch below.
+        hit_points = np.broadcast_to(origin, (n_rays, 3)) + best_t[:, None] * np.broadcast_to(
+            directions, (n_rays, 3)
+        )
+    locations = np.where(hit[:, None], hit_points, np.nan)
     return locations, hit
