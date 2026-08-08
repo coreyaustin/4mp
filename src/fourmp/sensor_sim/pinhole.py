@@ -66,14 +66,17 @@ class PinholeModel:
         f_j: float,
         n_i: int,
         n_j: int,
-        world_up: np.ndarray = (0.0, 1.0, 0.0),
+        world_up: np.ndarray = (0.0, 0.0, -1.0),
     ) -> "PinholeModel":
         """Build a pinhole whose forward axis points from ``center`` at ``target``.
 
         ``world_up`` is used only to construct an orthonormal (right, up,
         forward) basis; for this sensor's baseline-tilted arms (see
-        geometry.py) the true "up" (the line/Y axis) is unaffected by the
-        tilt, so world_up = +Y reproduces it exactly.
+        geometry.py's O_s convention) the true "up" (the line/rotation axis,
+        O_s's Z) is unaffected by the tilt, so world_up = -Z_(O_s) reproduces
+        it exactly (verified algebraically under the V1.3 relabel: this is
+        the old world_up = +Y_ours carried through the axis mapping
+        unchanged in effect, just renamed).
         """
         center = np.asarray(center, dtype=float)
         forward = unit(np.asarray(target, dtype=float) - center)

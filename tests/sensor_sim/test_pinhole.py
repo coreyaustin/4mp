@@ -40,7 +40,13 @@ def test_project_and_unproject_round_trip():
 def test_points_behind_pinhole_are_rejected():
     center = np.zeros(3)
     target = np.array([0.0, 0.0, 1.0])
-    model = PinholeModel.looking_at(center, target, f_i=100.0, f_j=100.0, n_i=50, n_j=50)
+    # Explicit world_up: PinholeModel's default (-Z) is chosen for this
+    # sensor's actual tilted arms (see pinhole.py), which never point
+    # exactly along Z -- a generic test target=(0,0,1) would degenerately
+    # coincide with that default and silently zero out the local basis.
+    model = PinholeModel.looking_at(
+        center, target, f_i=100.0, f_j=100.0, n_i=50, n_j=50, world_up=(0.0, 1.0, 0.0)
+    )
     behind_point = np.array([0.0, 0.0, -10.0])
     i, j = model.pixel_indices(behind_point[None, :])
     assert i[0] == -1 and j[0] == -1
@@ -49,7 +55,9 @@ def test_points_behind_pinhole_are_rejected():
 def test_out_of_bounds_pixels_get_sentinel():
     center = np.zeros(3)
     target = np.array([0.0, 0.0, 1.0])
-    model = PinholeModel.looking_at(center, target, f_i=10.0, f_j=10.0, n_i=20, n_j=20)
+    model = PinholeModel.looking_at(
+        center, target, f_i=10.0, f_j=10.0, n_i=20, n_j=20, world_up=(0.0, 1.0, 0.0)
+    )
     # Far off to the side -> projects way outside [0, 20).
     far_point = np.array([1000.0, 0.0, 1.0])
     i, j = model.pixel_indices(far_point[None, :])

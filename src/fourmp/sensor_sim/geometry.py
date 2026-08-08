@@ -1,17 +1,34 @@
 """Rigid transforms and ray math shared by the measurement and reconstruction engines.
 
-Sensor-frame convention (fixed for the whole package -- see architecture-decisions.md
-"Part/face pose" and the projector-model correction relayed 2026-08-07):
+Sensor-frame convention (V1.3 -- aligned to 4MP's cell-wide reference doc,
+``coordinate_transforms_equations_v3.md`` / ``transform_point_cloud_v3.py``;
+see architecture-decisions.md's "Coordinate frame convention" section for
+the full derivation). This frame is named **O_s** (scanner) in that doc:
 
-    X -- baseline / scan-step axis (188mm short measurement-area dimension).
-    Y -- line axis (319mm long measurement-area dimension); also the rotary
-         stage's rotation axis (the DMD's 2716-mirror line is treated as
-         "vertical" for pose purposes -- see part.py).
-    Z -- boresight/bisector axis (depth, positive from the sensor toward the part).
+    X -- depth / boresight axis. Physical range from the sensor increases as
+         X becomes more *negative* (the doc's "scanner depth = -X", an
+         artifact of the projector/camera optics being drawn from the
+         image-sensor side). Positive X points back toward the sensor.
+    Y -- lateral axis: the projector/camera baseline. Projector optical
+         center at Y = -baseline/2, camera at Y = +baseline/2.
+    Z -- the DMD's line axis (2716-mirror axis) *and* the rotary stage's
+         rotation axis. Per the doc's "Z down" convention for O_s, physical
+         "up" is -Z.
 
-The projector's optical center sits at X = -baseline/2, the camera's at
-X = +baseline/2, both at Y = 0, Z = 0, each aimed at the reference point
-(0, 0, working_distance).
+The projector's optical center sits at (X, Y, Z) = (0, -baseline/2, 0), the
+camera's at (0, +baseline/2, 0), each aimed at the reference point
+(-working_distance, 0, 0).
+
+Before V1.3 this package used its own ad hoc frame (X = baseline, Y = line/
+rotation axis, Z = boresight, positive toward the part) which had drifted
+from 4MP's cell-wide convention. The relabeling is a pure change of basis --
+a proper rotation, not a mirror -- given by:
+
+    X_(O_s) = -Z_ours     Y_(O_s) = +X_ours     Z_(O_s) = -Y_ours
+
+None of the ray-tracing/triangulation math below depends on which axis is
+called what; only the hardcoded geometry in sensor_config.py (and the
+default ``world_up`` in pinhole.py) needed re-deriving under the new labels.
 """
 
 from __future__ import annotations
@@ -19,6 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 
 def unit(v: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -29,25 +47,71 @@ def unit(v: np.ndarray, axis: int = -1) -> np.ndarray:
     return v / safe_norm
 
 
-def rotation_y(theta: float) -> np.ndarray:
-    """3x3 rotation matrix about the Y axis (right-handed, active rotation).
+def axis_alignment_rotation(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """3x3 rotation mapping unit vector ``source`` onto unit vector ``target``
+    (Rodrigues' rotation formula). General-purpose -- works for any pair of
+    directions, not just cardinal axes.
 
-    R_y(theta) @ (x, y, z) rotates (x, z) toward +Z as theta increases from
-    atan2(-x, z) toward 0 -- see part.py's theta_face derivation.
+    Used by part.py's V1.2 up-axis remap (an arbitrary part file's own "up"
+    direction onto this package's internal rotation axis) rather than
+    special-casing cardinal directions.
     """
-    c, s = np.cos(theta), np.sin(theta)
+    a = unit(np.asarray(source, dtype=float))
+    b = unit(np.asarray(target, dtype=float))
+    v = np.cross(a, b)
+    s = np.linalg.norm(v)
+    c = float(np.dot(a, b))
+
+    if s < 1e-9:
+        if c > 0:
+            return np.eye(3)
+        # Antiparallel: no unique rotation axis from the cross product: pick
+        # any axis perpendicular to `a` and rotate 180 deg about it.
+        candidates = np.eye(3)
+        alignment = np.abs(candidates @ a)
+        k = candidates[int(np.argmin(alignment))]
+        k = unit(k - np.dot(k, a) * a)
+        return 2.0 * np.outer(k, k) - np.eye(3)
+
+    vx = np.array(
+        [
+            [0.0, -v[2], v[1]],
+            [v[2], 0.0, -v[0]],
+            [-v[1], v[0], 0.0],
+        ]
+    )
+    return np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s * s))
+
+
+def rotation_z(yaw: float) -> np.ndarray:
+    """3x3 rotation matrix for yaw -- rotation about +Z (right-handed, active).
+
+    Matches the cell-wide doc's intrinsic Z->X->Y (yaw, pitch, roll) Euler
+    convention with pitch = roll = 0 (our rotary stage has one rotational
+    DOF): R(yaw, 0, 0) = R_z(yaw). Z is the stage's rotation axis in the
+    O_s/O_r frames (see module docstring) -- this replaces the pre-V1.3
+    ``rotation_y``, which rotated about this package's old Y axis before the
+    relabel.
+    """
+    c, s = np.cos(yaw), np.sin(yaw)
     return np.array(
         [
-            [c, 0.0, s],
-            [0.0, 1.0, 0.0],
-            [-s, 0.0, c],
+            [c, -s, 0.0],
+            [s, c, 0.0],
+            [0.0, 0.0, 1.0],
         ]
     )
 
 
 @dataclass(frozen=True)
 class Transform:
-    """A rigid transform: point' = R @ point + t."""
+    """A rigid transform: point' = R @ point + t.
+
+    Matches the cell-wide doc's convention exactly: ``p_A = R(A<-B) @ p_B +
+    t(A<-B)``, stacked as a 4x4 homogeneous matrix for composition/inversion
+    purposes (``.then()`` / ``.invert()`` below implement that 4x4 algebra
+    directly on the (R, t) pair rather than materializing the matrix).
+    """
 
     R: np.ndarray  # (3, 3)
     t: np.ndarray  # (3,)
@@ -71,8 +135,31 @@ class Transform:
         return vectors @ self.R.T
 
     def then(self, outer: "Transform") -> "Transform":
-        """Compose: apply self first, then ``outer``. Equivalent to outer ∘ self."""
+        """Compose: apply self first, then ``outer``. Equivalent to outer ∘ self.
+
+        If self = T(B<-C) and outer = T(A<-B), the result is T(A<-C) -- the
+        cell-wide doc's ``compose: T(A<-C) = T(A<-B) . T(B<-C)``.
+        """
         return Transform(outer.R @ self.R, outer.R @ self.t + outer.t)
+
+    def invert(self) -> "Transform":
+        """T(B<-A) from T(A<-B): R(B<-A) = R^T, t(B<-A) = -R^T @ t.
+
+        Used to derive T(O_r<-O_s) from the T(O_s<-O_r) this package builds
+        directly (see part.py) -- the cell-wide doc's ``invert`` rule,
+        reusing this one class rather than a parallel implementation.
+        """
+        Rt = self.R.T
+        return Transform(Rt, -Rt @ self.t)
+
+    def to_quat_trans(self) -> tuple[np.ndarray, np.ndarray]:
+        """Split into a scalar-last quaternion ``[x, y, z, w]`` and a
+        translation, matching ``transform_point_cloud_v3.py``'s
+        ``transform_to_quat_trans`` / ``transform_point_cloud`` signature
+        (scalar-last is also SciPy's own default ``as_quat()`` order, so no
+        reordering is needed at this boundary)."""
+        quat = Rotation.from_matrix(self.R).as_quat()  # [x, y, z, w]
+        return quat, self.t.copy()
 
 
 def closest_points_between_rays(

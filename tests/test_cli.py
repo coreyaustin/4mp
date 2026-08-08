@@ -62,8 +62,8 @@ def test_cli_end_to_end(tmp_path, cube_stl, capsys):
     assert np.abs(height_map[valid].mean() - 50.0) < 1e-3
 
     report = json.loads((run_dir / "report.json").read_text())
-    assert "physical_grid" in report
-    assert report["physical_grid"]["resolution_mm"] == pytest.approx(0.066, abs=0.01)
+    assert "o_r_grid" in report
+    assert report["o_r_grid"]["resolution_mm"] == pytest.approx(0.066, abs=0.01)
 
     out = capsys.readouterr().out
     assert "pointwise RMS" in out

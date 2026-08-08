@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from fourmp.sensor_sim.measurement import run_measurement
+from fourmp.sensor_sim.geometry import Transform
+from fourmp.sensor_sim.measurement import ScanData, run_measurement
 from fourmp.sensor_sim.part import load_part
 from fourmp.sensor_sim.reconstruction import run_reconstruction
 from fourmp.sensor_sim.regrid import (
@@ -13,6 +14,19 @@ from fourmp.sensor_sim.regrid import (
 )
 
 
+def _empty_scan_data() -> ScanData:
+    empty_int = np.array([], dtype=int)
+    empty_float = np.array([], dtype=float)
+    return ScanData(
+        step=empty_int,
+        mirror=empty_int,
+        cam_i=empty_int,
+        cam_j=empty_int,
+        cam_i_continuous=empty_float,
+        cam_j_continuous=empty_float,
+    )
+
+
 def test_pixel_footprint_is_in_the_expected_60_to_70um_range(sensor_config):
     footprint = pixel_footprint_mm(sensor_config)
     assert 0.06 < footprint < 0.07
@@ -20,22 +34,22 @@ def test_pixel_footprint_is_in_the_expected_60_to_70um_range(sensor_config):
 
 def test_make_grid_spec_covers_data_bounds_with_padding():
     x = np.array([-5.0, 5.0])
-    y = np.array([-2.0, 2.0])
-    grid = make_grid_spec(x, y, resolution_mm=1.0, pad_cells=1)
+    z = np.array([-2.0, 2.0])
+    grid = make_grid_spec(x, z, resolution_mm=1.0, pad_cells=1)
     assert grid.x_min <= -6.0
     assert grid.x_centers[0] < -5.0
     assert grid.x_centers[-1] > 5.0
-    assert grid.y_centers[0] < -2.0
-    assert grid.y_centers[-1] > 2.0
+    assert grid.z_centers[0] < -2.0
+    assert grid.z_centers[-1] > 2.0
 
 
 def test_bin_values_to_grid_averages_and_leaves_gaps_as_nan():
     x = np.array([0.5, 0.5, 5.5])  # first two land in the same cell
-    y = np.array([0.5, 0.5, 0.5])
+    z = np.array([0.5, 0.5, 0.5])
     values = np.array([10.0, 20.0, 99.0])
     grid = make_grid_spec(np.array([0.0, 6.0]), np.array([0.0, 1.0]), resolution_mm=1.0, pad_cells=0)
 
-    result = bin_values_to_grid(x, y, values, grid)
+    result = bin_values_to_grid(x, z, values, grid)
     # cell containing (0.5, 0.5) should average the two co-located values.
     assert result[0, 0] == pytest.approx(15.0)
     # a cell with no points should be NaN, not 0.
@@ -45,7 +59,7 @@ def test_bin_values_to_grid_averages_and_leaves_gaps_as_nan():
 def test_sample_true_height_on_grid_matches_known_flat_face(sensor_config, cube_stl_path):
     part = load_part(cube_stl_path, sensor_config, face_normal_hint=(1.0, 0.0, 0.0))
     grid = make_grid_spec(np.array([-10.0, 10.0]), np.array([-10.0, 10.0]), resolution_mm=1.0)
-    truth_grid = sample_true_height_on_grid(part.mesh, sensor_config, grid)
+    truth_grid = sample_true_height_on_grid(part.mesh, sensor_config, part.o_r_from_o_s, grid)
     valid = ~np.isnan(truth_grid)
     assert valid.any()
     assert np.allclose(truth_grid[valid], 50.0, atol=1e-6)
@@ -54,9 +68,11 @@ def test_sample_true_height_on_grid_matches_known_flat_face(sensor_config, cube_
 def test_regrid_reconstruction_and_truth_is_square_and_near_zero_residual(sensor_config, cube_stl_path):
     part = load_part(cube_stl_path, sensor_config, face_normal_hint=(1.0, 0.0, 0.0))
     scan = run_measurement(part.mesh, sensor_config, step_stride=2, mirror_stride=2)
-    result = run_reconstruction(scan, sensor_config)
+    result = run_reconstruction(scan, sensor_config, part.o_r_from_o_s)
 
-    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(result, part.mesh, sensor_config)
+    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(
+        result, part.mesh, sensor_config, part.o_r_from_o_s
+    )
 
     # V1.1 fixes the trapezoid/keystone artifact: a square physical face
     # should regrid to an (approximately) square array, not a skewed one.
@@ -71,19 +87,7 @@ def test_regrid_reconstruction_and_truth_is_square_and_near_zero_residual(sensor
 
 
 def test_regrid_raises_on_empty_reconstruction(sensor_config):
-    from fourmp.sensor_sim.measurement import ScanData
-    from fourmp.sensor_sim.reconstruction import run_reconstruction
-
-    empty_int = np.array([], dtype=int)
-    empty_float = np.array([], dtype=float)
-    empty_scan = ScanData(
-        step=empty_int,
-        mirror=empty_int,
-        cam_i=empty_int,
-        cam_j=empty_int,
-        cam_i_continuous=empty_float,
-        cam_j_continuous=empty_float,
-    )
-    empty_result = run_reconstruction(empty_scan, sensor_config)
+    identity = Transform.identity()
+    empty_result = run_reconstruction(_empty_scan_data(), sensor_config, identity)
     with pytest.raises(ValueError):
-        regrid_reconstruction_and_truth(empty_result, None, sensor_config)
+        regrid_reconstruction_and_truth(empty_result, None, sensor_config, identity)

@@ -188,3 +188,105 @@ scoped as part of finishing V1 rather than deferred to Phase 2:
      centroid" with a realistic centroid-estimation error model (a function
      of line width/PSF and per-pixel SNR) once the photometric side of the
      sensor model exists. Not required for V1.1.
+
+## V1.2 — part-frame up-axis convention (surfaced testing a non-cube part, 2026-08-08)
+
+Testing a tapered-frustum STL (Z-up) surfaced that `part.py` hardcoded the
+assumption that a part file's own frame is +Y-up, "satisfied by
+construction" only for the cube fixture and never actually checked. For a
+Z-up file this broke two things silently: the "reject faces nearly parallel
+to the rotation axis" check (meant to exclude the part's real top/bottom
+faces) was keyed to the wrong axis and would not have caught the frustum's
+actual top/bottom caps; and the mounting transform centered the wrong pair
+of axes, since it assumed Y was vertical when the file's vertical axis was
+Z.
+
+**Two changes, together:**
+
+1. **Default part-frame up-axis becomes +Z, not +Y** — CNC/CAM convention
+   (Z as the vertical/spindle axis), which is what real part files will
+   actually be authored in.
+2. **New CLI argument `--up-axis X Y Z`** (3-vector, default `0 0 1`, same
+   style as the existing `--face-normal`) to override for files authored
+   with a different native convention.
+
+**Implementation approach:** don't rewrite `compute_theta_face`/
+`compute_t_mount` to work generically about an arbitrary rotation axis.
+Instead, apply a single fixed change-of-basis to the mesh at ingestion time
+that remaps the specified up-axis onto the sensor frame's own rotation axis
+(stays **Y internally, unchanged** — the sensor's fixed hardware convention
+in `geometry.py`, independent of how any part file is authored), then run
+the existing pose math unchanged downstream.
+- Default case (part +Z up → internal +Y): the same -90°-about-X remap
+  already verified by hand on the pyramid test file:
+  `(x, y, z) -> (x, z, -y)`.
+- General case (arbitrary `--up-axis` vector, not just a cardinal axis):
+  build the remap via a general axis-to-axis rotation (e.g. Rodrigues'
+  rotation formula rotating `up_axis` onto `+Y`) rather than special-casing
+  cardinal axes.
+- `compute_theta_face`'s existing decomposition logic (normal's component
+  along the rotation axis ignored, remaining in-plane component rotated
+  onto the sensor's boresight bisector) needs **no change** — it's already
+  general enough once the remap above runs first. The fix is entirely at
+  the ingestion boundary, not the pose/triangulation math.
+- `_select_facet`'s axial-rejection check already takes `rotation_axis` as
+  a parameter — it's currently just always called with the hardcoded Y
+  constant. No change needed inside the function; fix is upstream.
+
+**Also required:** re-author `fixtures.py`'s test cube to be Z-up (matching
+the new default), since it currently only satisfies the old Y-up assumption
+by construction. Re-run the V1 milestone test after this change to confirm
+the cube still reconstructs correctly under the new default convention.
+
+## V1.3 — align to 4MP's cell-wide coordinate-frame doc (2026-08-08)
+
+4MP has a cell-wide reference doc standardizing frame conventions across the
+scanner, rotary table, and cutting tool (internal:
+`coordinate_transforms_equations_v3.md` / `transform_point_cloud_v3.py`).
+Adopt it — see "Coordinate frame convention" in `architecture-decisions.md`
+for the full derivation. Summary of what changes:
+
+1. **Relabel the internal sensor/optics frame** from our ad hoc convention
+   (`X`=baseline, `Y`=line/rotation axis, `Z`=boresight) to the doc's `O_s`
+   convention (`X`=depth/boresight, `Y`=lateral/baseline,
+   `Z`=turntable-sweep axis), per this exact mapping:
+   ```
+   X_(O_s) = -Z_ours     Y_(O_s) = +X_ours     Z_(O_s) = -Y_ours
+   ```
+   This is a pure relabel (permutation + sign flips) — the actual
+   projector/camera optics math and triangulation logic don't change, only
+   which axis is called what. Touches `geometry.py`'s documented convention,
+   `pinhole.py`, `sensor_config.py`, `measurement.py`, `reconstruction.py`
+   wherever axes are referenced by letter/position.
+
+2. **Introduce an explicit `O_r` (rotary table) frame** with a fixed "home"
+   relationship to the scanner frame at table angle θ=0 (rotation axis at
+   `X=0, Z=working_distance` in the old sensor-frame terms — already known
+   exactly in sim, no calibration needed). `T(O_r ← O_s)` at any θ is that
+   home relationship composed with the rotation by θ about the shared
+   vertical axis — mechanically close to what `part.py`'s `compute_pose`
+   already does, just exposed as its own named, composable transform
+   (matching the doc's `T(rotary←scanner)`) instead of folded invisibly into
+   one part→sensor transform.
+
+3. **Generate height maps and plots in `O_r`, not raw sensor/camera
+   coordinates:** `X` (horizontal) and `Z` (vertical/up) as the two in-plane
+   spatial axes, with the signed height/deviation value being `O_r`'s `Y`
+   component (into the page) after applying `T(O_r ← O_s)`. Fold this into
+   the V1.1 regridding work above — same fix, now targeting the correct
+   standardized frame instead of an arbitrary physical-XY plane.
+
+4. **Express the stage's one rotational DOF as yaw** (about the shared
+   vertical axis, matching the doc's intrinsic `Z→X→Y` yaw/pitch/roll
+   convention) rather than a bespoke `rotation_y`, so it composes cleanly if
+   `transform_point_cloud_v3.py`'s helpers are ever called directly against
+   our sim's transforms. Pitch/roll aren't needed (single-DOF stage).
+
+5. **Don't reimplement compose/invert/quaternion machinery from scratch** —
+   `geometry.py`'s `Transform` already does rotation+translation and
+   composition (`.then()`); add an `invert()` method and a
+   quaternion-conversion helper to be drop-in compatible with
+   `transform_point_cloud_v3.py`'s conventions, rather than a parallel
+   implementation.
+
+`O_t` (cutting tool) is not needed — no cutting engine in our scope.

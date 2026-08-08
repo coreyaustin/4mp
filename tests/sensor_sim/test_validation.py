@@ -13,9 +13,9 @@ from fourmp.sensor_sim.validation import (
 def test_ground_truth_matches_known_flat_face_height(sensor_config, cube_stl_path):
     part = load_part(cube_stl_path, sensor_config, face_normal_hint=(1.0, 0.0, 0.0))
     scan = run_measurement(part.mesh, sensor_config, step_stride=4, mirror_stride=4)
-    result = run_reconstruction(scan, sensor_config)
+    result = run_reconstruction(scan, sensor_config, part.o_r_from_o_s)
 
-    truth = ground_truth_like(part.mesh, sensor_config, result.height_map)
+    truth = ground_truth_like(part.mesh, sensor_config, part.o_r_from_o_s, result.height_map)
     valid = ~np.isnan(truth)
     assert valid.sum() > 0
     # Ground truth is sampled analytically (no scan-side quantization), so

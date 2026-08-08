@@ -9,7 +9,11 @@ Size: 100mm per side. Comfortably inside the 188mm x 319mm measurement area
 (leaving margin on both axes), and small relative to the 470mm working
 distance, while still being large enough to sample with real coverage.
 A cube is symmetric under axis relabeling, so no special reorientation is
-needed to satisfy part.py's "+Y is up" convention -- it holds by construction.
+needed to satisfy part.py's default "+Z is up" convention (V1.2) -- it
+holds by construction. That symmetry is also why a non-cube part (a tapered
+frustum) was what actually surfaced the V1.2 up-axis bug in the first
+place -- see the dedicated up-axis-remap tests in test_part.py for coverage
+this fixture's symmetry can't provide.
 """
 
 from __future__ import annotations

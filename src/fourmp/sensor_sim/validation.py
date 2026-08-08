@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import numpy as np
 import trimesh
 
+from fourmp.sensor_sim.geometry import Transform
+from fourmp.sensor_sim.part import height_in_o_r
 from fourmp.sensor_sim.raytrace import nearest_intersection
 from fourmp.sensor_sim.sensor_config import SensorConfig
 
@@ -27,12 +29,14 @@ from fourmp.sensor_sim.sensor_config import SensorConfig
 def sample_ground_truth(
     true_mesh: trimesh.Trimesh,
     sensor_config: SensorConfig,
+    o_r_from_o_s: Transform,
     rows: np.ndarray,
     cols: np.ndarray,
 ) -> np.ndarray:
-    """Ground-truth height at each given camera pixel (row, col), sampled
-    directly from ``true_mesh`` (already posed into sensor space). NaN where
-    the back-projected camera ray misses the mesh entirely.
+    """Ground-truth height (O_r's Y component, V1.3 -- see part.py's
+    ``height_in_o_r``) at each given camera pixel (row, col), sampled
+    directly from ``true_mesh`` (already posed into O_s). NaN where the
+    back-projected camera ray misses the mesh entirely.
 
     Restricted to caller-supplied pixels (typically: wherever the
     reconstruction produced a value) rather than the full camera array,
@@ -44,17 +48,20 @@ def sample_ground_truth(
     locations, hit = nearest_intersection(camera.center, directions, true_mesh)
 
     heights = np.full(len(rows), np.nan)
-    heights[hit] = sensor_config.height_from_point(locations[hit])
+    heights[hit] = height_in_o_r(locations[hit], o_r_from_o_s)
     return heights
 
 
 def ground_truth_like(
-    true_mesh: trimesh.Trimesh, sensor_config: SensorConfig, height_map: np.ndarray
+    true_mesh: trimesh.Trimesh,
+    sensor_config: SensorConfig,
+    o_r_from_o_s: Transform,
+    height_map: np.ndarray,
 ) -> np.ndarray:
     """Ground-truth height map matching ``height_map``'s shape and valid-cell
     footprint (same convention: mm, signed deviation, same camera-pixel grid)."""
     rows, cols = np.nonzero(~np.isnan(height_map))
-    heights = sample_ground_truth(true_mesh, sensor_config, rows, cols)
+    heights = sample_ground_truth(true_mesh, sensor_config, o_r_from_o_s, rows, cols)
     truth = np.full_like(height_map, np.nan)
     truth[rows, cols] = heights
     return truth

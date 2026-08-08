@@ -646,125 +646,6 @@ above).
     Scheimpflug defocus, polynomial field-angle calibration model (all
     design captured above, none built yet).
 
-## V1 implementation notes (2026-08-07)
-
-First working implementation: `src/fourmp/sensor_sim/` (measurement engine,
-reconstruction engine, part/pose ingestion, validation harness), tests in
-`tests/sensor_sim/`. A few things the spec left implicit had to be resolved
-to actually write the ray-tracing code; recorded here so they're easy to find
-rather than buried only in code comments.
-
-**Projector model (resolved 2026-08-07, superseding an initial flat-grid
-draft):** both the DMD projector and the camera are the same tilted-pinhole
-model (`pinhole.py`) -- own optical center, own axis tilted by the 27deg
-half-angle off boresight, own focal length. The projector's focal length is
-*derived*, not free: the DMD's physical half-extents (mirror count/2 x
-5.4um pitch), viewed through its own tilted axis at the corresponding
-oblique distance to the reference point, are sized to subtend the confirmed
-188x319mm measurement area. Both axes independently land on ~24.2mm for a
-single (non-anamorphic) lens -- an internal consistency check, and in the
-same ballpark as the optical memo's own ~20.7mm estimate for this
-configuration (not exact -- expected, since the idealized symmetric-baseline
-geometry here isn't identical to whatever conjugate points the real lens
-design uses).
-
-**Baseline:** derived, not free, from the confirmed working distance and
-half-angle: `baseline = 2 * 470mm * tan(27deg) ~= 479mm`, projector and
-camera each at +-239.5mm from the boresight, both aimed at the reference
-point (0, 0, 470mm).
-
-**Sensor-frame axis convention (implementation detail, not a spec fork):** X
-= baseline/scan-step axis (188mm), Y = line axis (319mm) *and* the rotary
-stage's rotation axis, Z = boresight. Parts are assumed authored with +Y as
-their own "up" axis to make T_mount a pure translation, per spec -- true by
-construction for the generated test cube, and would need to come from the
-real companion schema for arbitrary parts.
-
-**Stage placement (filling a gap the spec's one-line pose formula doesn't
-spell out):** rotating "about the rotation axis" only works out physically if
-that axis passes through the frame origin at the moment `R_z(theta_face)` is
-applied. So T_mount centers the part on (X=0, Z=0) and sets its bottom to
-Y=0 (exactly as described); a further fixed placement -- rotation axis at
-sensor-frame (X=0, Z=470mm), Y chosen to vertically center the part in the
-line-axis FOV -- is applied after the rotation to actually land the pose in
-sensor space. Same math, just split so the rotation is a true in-place spin
-about the physical pivot rather than an accidental orbit around the sensor
-origin.
-
-**Camera FOV margin:** placeholder 10% linear margin over the measurement
-area (spec: margin is genuinely open and non-blocking for V1). Doesn't
-affect correctness -- the only real clipping boundary is the 5328x3104 pixel
-array bound, which is enforced regardless of this margin.
-
-**Test cube:** generated (not hand-supplied -- none exists yet), 100mm side,
-`tests/data/cube_100mm.stl`. Selected face (outward normal (1,0,0) in part
-frame) poses to a flat plane at sensor-frame Z = 470mm + 50mm, i.e. a known,
-hand-checkable expected height of **+50mm** everywhere -- deliberately
-nonzero (not exactly at the reference plane) so a sign or scale bug in the
-height formula couldn't hide behind a coincidental true value of zero.
-
-**V1 milestone result:** full confirmed resolution (1600 scan steps x 2716
-mirrors, 5328x3104 camera) against the test cube face: ~560k scan hits,
-reconstructed-vs-ground-truth pointwise RMS ~0.025mm, max ~0.05mm (consistent
-with sub-pixel camera quantization -- the only error source in this
-idealized model). Spectral comparison implemented as the *residual field's*
-own power spectrum (recon - truth), not a recon/truth spectrum ratio -- ratio
-form is undefined for this flat-face test case, since truth's own spectrum
-is ~0 off DC.
-
-**Known gaps found but not fixed (out of scope for this build):**
-`pyproject.toml`'s `[tool.poetry.scripts]` still points at `fourmp.cli:main`,
-which no longer exists (removed in the `fix: removed old code` commit); the
-package also has no top-level `README.md` despite `pyproject.toml`
-referencing one, and no `src/fourmp/__init__.py` (works today via Python's
-implicit namespace packages, but worth an explicit one if `fourmp` grows
-sibling packages beyond `sensor_sim`).
-
-## V1.1 implementation notes (2026-08-07)
-
-Two fixes from the spec's "V1.1 — calibration fix" section, both implemented
-and verified against the cube fixture:
-
-**Sub-pixel reconstruction.** `measurement.py`'s `ScanData` now carries the
-camera's continuous projected `(i, j)` (`PinholeModel.project_points()`)
-alongside a rounded discrete pixel address kept only for bookkeeping
-(collision detection between scan steps landing on the same physical
-pixel). `reconstruction.py` triangulates from the continuous value. Effect
-on the cube fixture: pointwise RMS dropped from ~25.5um to ~2e-13mm (i.e.
-floating-point noise) -- confirming this, not a geometry bug, was the
-dominant V1.0 error source, exactly as the spec predicted.
-
-**Physical XY-grid regridding.** New `regrid.py`: bins the reconstruction's
-triangulated `(X, Y, Z)` points onto a uniform mm grid (resolution =
-`pixel_footprint_mm()`, the camera's own pixel footprint at the reference
-plane -- averaged across both axes since it varies slightly across the
-keystoned FOV, landing at ~66um for this sensor, matching the spec's
-~60-70um estimate). Ground truth is resampled directly on that same grid by
-casting a ray along the boresight (+Z) through each cell's (X, Y) into the
-true mesh -- not by back-projecting camera pixels, which would just
-reintroduce the keystone this change is meant to remove. Effect on the cube
-fixture: the reconstructed/ground-truth footprint went from a trapezoid
-(camera-pixel-native rows/cols) to a square within 5% of aspect ratio 1:1
-(physical mm), matching the true 100x100mm face.
-
-`raytrace.nearest_intersection()` needed generalizing to support both a
-shared origin/varying directions (projector and camera, unchanged) *and* a
-varying origin/shared direction (one ray per grid cell, ground-truth
-sampling) -- implemented via elementwise dot products instead of matrix
-multiplies, so it broadcasts correctly either way.
-
-The camera-pixel-native `height_map`/`triangulation_gap_mm` diagnostic view
-(`reconstruction.py`'s `HeightMapResult`) is kept alongside the new
-`points`/`heights`/`gaps` (full-precision, ungridded) fields, per the spec's
-note that some diagnostics are naturally per-camera-pixel; the CLI still
-plots the gap map (`triangulation_gap_map.png`) on that native grid.
-
-**Not implemented (explicitly deferred, per spec):** a realistic
-centroid-estimation error model. The perfect sub-pixel value used here is a
-placeholder standing in for a real centroid/peak-finding estimator over the
-line's intensity profile, exactly as binary intensity stands in for a real
-BRDF -- both wait on a photometric/PSF model that doesn't exist yet.
-
 ## Engine interface contracts (current scope)
 
 - Measurement engine: face (mesh + BRDF), already posed into sensor space
@@ -779,3 +660,104 @@ BRDF -- both wait on a photometric/PSF model that doesn't exist yet.
 
 **[OUT OF SCOPE]** Correction engine and cutting engine interface contracts —
 preserved above under their respective "OUT OF SCOPE" sections.
+
+## V1.2 implementation notes (2026-08-08)
+
+Part-frame up-axis convention: default assumed up-axis for an ingested STL
+changed from +Y (an undocumented placeholder that only the symmetric cube
+fixture happened to satisfy) to +Z, matching CNC/CAM convention. A
+`--up-axis X Y Z` CLI flag (`load_part`'s `up_axis` parameter) overrides it
+for files authored differently. Implemented as one fixed change-of-basis
+(`part.py`'s `_remap_up_axis`, via `geometry.py`'s general
+`axis_alignment_rotation` -- Rodrigues' formula, handling the antiparallel
+degenerate case explicitly since the default case (+Z file-up onto internal
+"physical up") is exactly antiparallel) applied to the mesh once at
+ingestion; everything downstream (face selection, T_mount, theta_face) is
+unchanged and written against the internal convention.
+
+The cube fixture is symmetric under axis relabeling, so it can't exercise
+this at all (this is literally how the bug went unnoticed -- surfaced only
+by testing a non-cube part). `test_part.py` covers the remap with a
+deliberately asymmetric plate fixture instead.
+
+## V1.3 implementation notes: Coordinate frame convention (2026-08-08)
+
+Adopted 4MP's cell-wide `coordinate_transforms_equations_v3.md` /
+`transform_point_cloud_v3.py` convention in place of this package's own ad
+hoc sensor frame (see "Part/face pose" above), which had drifted from it.
+Three changes, all implemented:
+
+**1. Relabeled the internal sensor/optics frame to O_s.** Pure change of
+basis (a proper rotation -- permutation + sign flips, not a mirror), applied
+throughout `geometry.py`/`pinhole.py`/`sensor_config.py`/`measurement.py`/
+`reconstruction.py`:
+
+```
+X_(O_s) = -Z_ours     Y_(O_s) = +X_ours     Z_(O_s) = -Y_ours
+```
+
+O_s: X = depth/boresight (depth = -X, an artifact of the doc's image-sensor-
+side drawing convention), Y = baseline/lateral, Z = the DMD line axis *and*
+the rotary stage's rotation axis (physical "up" = -Z, matching the doc's
+"O_s: Z down"). Concretely: projector at (0, -baseline/2, 0), camera at
+(0, +baseline/2, 0), reference point at (-working_distance, 0, 0).
+
+None of the ray-tracing/triangulation math needed to change -- it was
+already generic vector algebra with no hardcoded axis assumptions, *except*
+one: `PinholeModel.looking_at`'s default `world_up` (used only to build an
+orthonormal local basis) had to change from `(0,1,0)` to `(0,0,-1)`, the
+same physical direction carried through the axis mapping. Verified
+algebraically (both by transforming the old basis vectors through the
+mapping and by recomputing the projector's local basis from scratch in O_s)
+before touching the code.
+
+**2. Introduced an explicit O_r (rotary table) frame.** `part.py`'s
+`compute_pose` now returns a named `o_r_from_o_s` (`T(O_r <- O_s)`)
+alongside `pose`, rather than folding everything into one opaque part-to-
+sensor composition. `Transform` gained `.invert()` and `.to_quat_trans()`
+(scalar-last quaternion, matching `transform_point_cloud_v3.py`'s
+convention) rather than a parallel implementation.
+
+Getting this right took a wrong turn worth recording. **The rotation used
+to derive `T(O_s <- O_r)` is a *fixed* quarter turn (`rotation_z(pi/2)`),
+not `rotation_z(theta_face)`** -- easy to conflate since both are yaws about
+the same shared Z axis, and reusing `theta_face` (the rotation that aligns
+*this face's normal* with the boresight, needed for `pose`) is the natural
+first guess. It's wrong: `theta_face` depends on which face is selected,
+but O_r's own axes relative to the mounted (T_mount-applied) frame don't.
+Proof sketch: define O_r's Y axis (in mounted-frame coordinates) as the face
+normal, Z as the shared rotation axis, X completing a right-handed basis;
+composing that per-face basis change with `rotation_z(theta_face)` gives,
+for *any* in-plane normal, exactly `rotation_z(pi/2)` -- the theta-
+dependence cancels out algebraically. Verified numerically against several
+normals during debugging.
+
+The tell was the regridded output: the naive (`theta_face`-based) version
+put the flat test face's actual ~100mm in-plane extent onto what was
+supposed to be the near-constant height axis, and the near-constant depth
+onto one of the in-plane axes -- a `3 x 1512`-cell grid instead of a sane
+`~1512 x 1512` square, and a height "map" ranging over 100mm instead of
+sitting at ~50mm +/- float noise. Both are now covered by regression tests
+(`test_part.py`'s `test_o_r_from_o_s_puts_height_on_y_and_extent_on_x_and_z`,
+`test_v1_milestone.py`'s square-grid assertion).
+
+**3. Height maps/plots now live in O_r, folded into V1.1's regridding.**
+`regrid.py`'s grid is O_r's (X, Z) plane (X horizontal, Z vertical); the
+binned value is O_r's Y component (`part.py`'s `height_in_o_r`, replacing
+the earlier ad hoc `SensorConfig.height_from_point`'s "Z - working_distance"
+shortcut, which stopped being meaningful once the frame was relabeled and
+was removed outright rather than left as dead/misleading code). Ground
+truth is sampled directly on the same O_r grid by casting a ray along O_r's
++Y through each cell's (X, Z), transformed into O_s to actually trace it
+against the posed mesh -- not by back-projecting camera pixels, which would
+reintroduce the keystone this is meant to avoid. Height is therefore a
+function of a specific face/pose's `o_r_from_o_s`, not a fixed `SensorConfig`
+property -- `run_reconstruction`, `regrid_reconstruction_and_truth`, and
+`validation.py`'s pixel-native ground-truth helpers all take it as a
+parameter now.
+
+**Not changed:** `O_t` (cutting tool) -- no cutting engine in scope. The
+camera-pixel-native diagnostic view (`HeightMapResult.height_map`/
+`triangulation_gap_mm`) is unchanged in spirit (still per-camera-pixel,
+still kept per the V1.1 note) other than sourcing its heights through the
+same `height_in_o_r` call.

@@ -1,5 +1,6 @@
 import numpy as np
 
+from fourmp.sensor_sim.geometry import Transform
 from fourmp.sensor_sim.measurement import ScanData, run_measurement
 from fourmp.sensor_sim.part import load_part
 from fourmp.sensor_sim.reconstruction import run_reconstruction
@@ -21,7 +22,7 @@ def _empty_scan_data() -> ScanData:
 def test_reconstruction_recovers_known_flat_face_height(sensor_config, cube_stl_path):
     part = load_part(cube_stl_path, sensor_config, face_normal_hint=(1.0, 0.0, 0.0))
     scan = run_measurement(part.mesh, sensor_config, step_stride=4, mirror_stride=4)
-    result = run_reconstruction(scan, sensor_config)
+    result = run_reconstruction(scan, sensor_config, part.o_r_from_o_s)
 
     assert len(result.heights) > 0
     # Known geometry: face sits at Z = working_distance + 50mm (see
@@ -43,7 +44,7 @@ def test_reconstruction_recovers_known_flat_face_height(sensor_config, cube_stl_
 
 
 def test_reconstruction_empty_scan_gives_all_nan(sensor_config):
-    result = run_reconstruction(_empty_scan_data(), sensor_config)
+    result = run_reconstruction(_empty_scan_data(), sensor_config, Transform.identity())
     assert np.isnan(result.height_map).all()
     assert len(result.points) == 0
     assert len(result.heights) == 0
@@ -51,7 +52,7 @@ def test_reconstruction_empty_scan_gives_all_nan(sensor_config):
 
 
 def test_centered_index_convention(sensor_config):
-    result = run_reconstruction(_empty_scan_data(), sensor_config)
+    result = run_reconstruction(_empty_scan_data(), sensor_config, Transform.identity())
     n_i, n_j = result.height_map.shape
 
     # Corner pixel (0, 0) should report a large-negative centered index...

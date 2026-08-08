@@ -22,13 +22,21 @@ point noise for a still, flat surface).
 
 Two outputs, per sensor-sim-v1-spec.md's V1.1 section:
 - ``points``/``heights``/``gaps`` -- one entry per hit, full precision, no
-  pixel binning. This is what the physical-XY-grid regridding (regrid.py)
+  pixel binning. This is what the O_r-frame regridding (regrid.py, V1.3)
   should consume for the "real" height map.
 - ``height_map``/``triangulation_gap_mm`` -- the previous camera-pixel-
   native diagnostic view (discrete pixel address, collision-resolved),
   kept because some diagnostics are naturally per-camera-pixel. NaN where
   no data -- there's no such thing as a real "no data" reading of exactly
   0mm.
+
+**V1.3:** height is O_r's Y component after ``T(O_r <- O_s)`` (see
+part.py's ``height_in_o_r``), not the earlier ad hoc "Z - working_distance"
+shortcut -- that shortcut assumed a fixed boresight-perpendicular reference
+plane and stopped being meaningful once the sensor frame was relabeled to
+4MP's O_s/O_r convention. ``run_reconstruction`` therefore takes the face's
+own ``o_r_from_o_s`` transform (``Part.o_r_from_o_s``) rather than deriving
+height from ``SensorConfig`` alone.
 """
 
 from __future__ import annotations
@@ -37,8 +45,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from fourmp.sensor_sim.geometry import closest_points_between_rays_batch
+from fourmp.sensor_sim.geometry import Transform, closest_points_between_rays_batch
 from fourmp.sensor_sim.measurement import ScanData
+from fourmp.sensor_sim.part import height_in_o_r
 from fourmp.sensor_sim.sensor_config import SensorConfig
 
 
@@ -47,8 +56,8 @@ class HeightMapResult:
     """Full-precision triangulated points plus the camera-pixel-native
     diagnostic view derived from them."""
 
-    points: np.ndarray  # (n_hits, 3), sensor frame, one row per hit
-    heights: np.ndarray  # (n_hits,) mm, signed deviation from the reference plane
+    points: np.ndarray  # (n_hits, 3), O_s frame, one row per hit
+    heights: np.ndarray  # (n_hits,) mm, O_r's Y component (V1.3 -- signed deviation)
     gaps: np.ndarray  # (n_hits,) mm, triangulation gap (quantization-error diagnostic)
     pixel_i: np.ndarray  # (n_hits,) int, discrete/recorded camera pixel row
     pixel_j: np.ndarray  # (n_hits,) int, discrete/recorded camera pixel column
@@ -81,7 +90,12 @@ def _empty_result(camera_n_i: int, camera_n_j: int) -> HeightMapResult:
     )
 
 
-def run_reconstruction(scan_data: ScanData, sensor_config: SensorConfig) -> HeightMapResult:
+def run_reconstruction(
+    scan_data: ScanData, sensor_config: SensorConfig, o_r_from_o_s: Transform
+) -> HeightMapResult:
+    """``o_r_from_o_s`` is the face/pose-specific ``T(O_r <- O_s)`` from
+    ``Part.o_r_from_o_s`` (V1.3) -- height is only meaningful relative to a
+    specific pose's rotary-table frame, not a fixed sensor property."""
     projector = sensor_config.projector
     camera = sensor_config.camera
 
@@ -94,7 +108,7 @@ def run_reconstruction(scan_data: ScanData, sensor_config: SensorConfig) -> Heig
     points, gaps = closest_points_between_rays_batch(
         projector.center, proj_dirs, camera.center, cam_dirs
     )
-    heights = sensor_config.height_from_point(points)
+    heights = height_in_o_r(points, o_r_from_o_s)
 
     # Camera-pixel-native diagnostic view: deterministic collision handling,
     # if two hits (different scan steps/mirrors) round to the same discrete

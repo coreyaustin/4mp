@@ -39,8 +39,8 @@ from fourmp.sensor_sim.pinhole import PinholeModel
 
 WORKING_DISTANCE_MM = 470.0
 HALF_ANGLE_DEG = 27.0
-MEASUREMENT_AREA_SHORT_MM = 188.0  # baseline / scan-step axis (X)
-MEASUREMENT_AREA_LONG_MM = 319.0  # line axis (Y)
+MEASUREMENT_AREA_SHORT_MM = 188.0  # baseline / scan-step axis (O_s's Y)
+MEASUREMENT_AREA_LONG_MM = 319.0  # line axis (O_s's Z)
 
 DMD_SCAN_STEPS = 1600  # short-axis mirror count == number of scan steps
 DMD_LINE_MIRRORS = 2716  # long-axis mirror count, fired simultaneously per step
@@ -63,29 +63,24 @@ class SensorConfig:
     identical projector-ray model and camera calibration") -- the measurement
     engine and reconstruction engine should each be handed the same
     SensorConfig instance rather than constructing their own.
+
+    Height is deliberately *not* a method here (V1.3): "signed deviation"
+    only means something relative to the rotary table's own reference frame
+    (O_r), and that transform depends on which face/pose is being measured
+    (see part.py's ``o_r_from_o_s``), not just the fixed sensor calibration
+    this class represents.
     """
 
     working_distance_mm: float
     half_angle_deg: float
     baseline_mm: float
-    reference_point: np.ndarray  # (3,), sensor frame: (0, 0, working_distance_mm)
+    reference_point: np.ndarray  # (3,), O_s frame: (-working_distance_mm, 0, 0)
     projector: PinholeModel
     camera: PinholeModel
 
     @property
     def half_angle_rad(self) -> float:
         return math.radians(self.half_angle_deg)
-
-    def height_from_point(self, point: np.ndarray) -> np.ndarray:
-        """Signed deviation from the reference plane: height = Z - working_distance.
-
-        The reference plane is perpendicular to the boresight (sensor-frame Z)
-        at the working distance; Z is the same boresight coordinate for any
-        point already expressed in sensor frame, so this is a direct
-        subtraction, not a per-point projection.
-        """
-        point = np.asarray(point, dtype=float)
-        return point[..., 2] - self.working_distance_mm
 
 
 def build_sensor_config(
@@ -106,9 +101,13 @@ def build_sensor_config(
     baseline_mm = 2.0 * working_distance_mm * math.tan(half_angle_rad)
     half_baseline_mm = baseline_mm / 2.0
 
-    projector_center = np.array([-half_baseline_mm, 0.0, 0.0])
-    camera_center = np.array([half_baseline_mm, 0.0, 0.0])
-    reference_point = np.array([0.0, 0.0, working_distance_mm])
+    # O_s (see geometry.py): X = depth/boresight (depth = -X), Y = baseline
+    # (lateral), Z = line/rotation axis. Projector/camera sit at X=Z=0,
+    # offset along Y by +-half the baseline, both aimed at the reference
+    # point at X = -working_distance (Y=Z=0).
+    projector_center = np.array([0.0, -half_baseline_mm, 0.0])
+    camera_center = np.array([0.0, half_baseline_mm, 0.0])
+    reference_point = np.array([-working_distance_mm, 0.0, 0.0])
 
     distance_to_reference = math.hypot(half_baseline_mm, working_distance_mm)
 

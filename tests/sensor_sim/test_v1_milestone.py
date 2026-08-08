@@ -34,13 +34,15 @@ def test_v1_cube_face_measure_reconstruct_validate(sensor_config, cube_stl_path)
     scan = run_measurement(part.mesh, sensor_config)  # full 1600 x 2716 resolution
     assert len(scan) > 0, "measurement engine produced no hits at all"
 
-    result = run_reconstruction(scan, sensor_config)
+    result = run_reconstruction(scan, sensor_config, part.o_r_from_o_s)
     assert len(result.heights) > 0
 
-    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(result, part.mesh, sensor_config)
+    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(
+        result, part.mesh, sensor_config, part.o_r_from_o_s
+    )
 
     # The V1.1 keystone fix: a square physical face should regrid to an
-    # (approximately) square array on physical XY axes, not the skewed
+    # (approximately) square array on O_r's (X, Z) axes, not the skewed
     # trapezoid the camera-pixel-native grid produced.
     n_rows, n_cols = grid.shape
     assert abs(n_rows - n_cols) / max(n_rows, n_cols) < 0.05, grid.shape

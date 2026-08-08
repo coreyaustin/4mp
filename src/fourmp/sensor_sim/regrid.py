@@ -1,20 +1,25 @@
-"""V1.1: regrid the reconstruction onto a uniform physical XY grid (mm),
-instead of reporting on raw camera-pixel indices.
+"""V1.1: regrid the reconstruction onto a uniform physical grid (mm),
+instead of reporting on raw camera-pixel indices. V1.3: that grid is now
+O_r's own (X, Z) plane -- X horizontal, Z vertical -- per 4MP's cell-wide
+convention, not an arbitrary O_s-frame XY plane.
 
 The camera-pixel-native grid (reconstruction.py's ``height_map``) makes a
 flat rectangular face render as a trapezoid -- an artifact of indexing by a
 physically tilted camera's row/col, not a defect in the geometry (it shows
-up identically in a directly-sampled ground truth). Binning the *triangulated*
-points by their actual physical (X, Y) position removes that artifact and
-gets mm-native axes for free.
+up identically in a directly-sampled ground truth). Binning the
+*triangulated* points by their actual position removes that artifact and
+gets mm-native axes for free; V1.3 places that position in O_r rather than
+O_s so the grid axes and the height value (O_r's Y, see part.py's
+``height_in_o_r``) all come from one standardized frame.
 
 Ground truth is resampled directly on this same grid too -- not by
 back-projecting camera pixels (that's the camera-pixel-native view this
-module is deliberately moving away from), but by casting a ray straight
-along the boresight (+Z) through each grid cell's (X, Y) and intersecting
-the true mesh. That keeps ground truth decoupled from any camera-specific
-keystoning, which is the more literal reading of "sampled directly from the
-true mesh" anyway.
+module is deliberately moving away from), but by casting a ray along O_r's
+Y axis through each grid cell's (X, Z) and intersecting the true mesh (the
+ray itself is transformed into O_s to actually trace it there, since that's
+the frame the mesh is posed in). That keeps ground truth decoupled from any
+camera-specific keystoning, which is the more literal reading of "sampled
+directly from the true mesh" anyway.
 
 Resolution is chosen to match the camera's own pixel footprint projected
 onto the reference plane (~60-70um per sensor-sim-v1-spec.md's V1.1 note) --
@@ -31,6 +36,8 @@ from dataclasses import dataclass
 import numpy as np
 import trimesh
 
+from fourmp.sensor_sim.geometry import Transform
+from fourmp.sensor_sim.part import height_in_o_r
 from fourmp.sensor_sim.raytrace import nearest_intersection
 from fourmp.sensor_sim.reconstruction import HeightMapResult
 from fourmp.sensor_sim.sensor_config import SensorConfig
@@ -50,12 +57,13 @@ def pixel_footprint_mm(sensor_config: SensorConfig) -> float:
 
 @dataclass(frozen=True)
 class GridSpec:
-    """A uniform grid over physical (X, Y), mm. Row axis = Y (line axis),
-    column axis = X (baseline axis) -- matches typical image (row, col) =
-    (y, x) convention for the plots in report.py."""
+    """A uniform grid over O_r's (X, Z), mm -- X horizontal, Z vertical
+    (V1.3). Row axis = Z, column axis = X, matching typical image
+    (row, col) = (vertical, horizontal) convention for the plots in
+    report.py."""
 
     x_min: float
-    y_min: float
+    z_min: float
     resolution_mm: float
     shape: tuple[int, int]  # (n_rows, n_cols)
 
@@ -64,8 +72,8 @@ class GridSpec:
         return self.x_min + (np.arange(self.shape[1]) + 0.5) * self.resolution_mm
 
     @property
-    def y_centers(self) -> np.ndarray:
-        return self.y_min + (np.arange(self.shape[0]) + 0.5) * self.resolution_mm
+    def z_centers(self) -> np.ndarray:
+        return self.z_min + (np.arange(self.shape[0]) + 0.5) * self.resolution_mm
 
     @property
     def extent_mm(self) -> tuple[float, float, float, float]:
@@ -74,29 +82,29 @@ class GridSpec:
         return (
             self.x_min,
             self.x_min + n_cols * self.resolution_mm,
-            self.y_min,
-            self.y_min + n_rows * self.resolution_mm,
+            self.z_min,
+            self.z_min + n_rows * self.resolution_mm,
         )
 
 
-def make_grid_spec(x: np.ndarray, y: np.ndarray, resolution_mm: float, pad_cells: int = 1) -> GridSpec:
+def make_grid_spec(x: np.ndarray, z: np.ndarray, resolution_mm: float, pad_cells: int = 1) -> GridSpec:
     """A grid covering the bounding box of the given points, at
     ``resolution_mm``, padded by ``pad_cells`` on each side."""
     pad = pad_cells * resolution_mm
     x_min, x_max = float(x.min()) - pad, float(x.max()) + pad
-    y_min, y_max = float(y.min()) - pad, float(y.max()) + pad
+    z_min, z_max = float(z.min()) - pad, float(z.max()) + pad
     n_cols = max(1, int(np.ceil((x_max - x_min) / resolution_mm)))
-    n_rows = max(1, int(np.ceil((y_max - y_min) / resolution_mm)))
-    return GridSpec(x_min=x_min, y_min=y_min, resolution_mm=resolution_mm, shape=(n_rows, n_cols))
+    n_rows = max(1, int(np.ceil((z_max - z_min) / resolution_mm)))
+    return GridSpec(x_min=x_min, z_min=z_min, resolution_mm=resolution_mm, shape=(n_rows, n_cols))
 
 
-def bin_values_to_grid(x: np.ndarray, y: np.ndarray, values: np.ndarray, grid: GridSpec) -> np.ndarray:
-    """Mean-aggregate ``values`` at (x, y) into ``grid``'s cells. NaN where
+def bin_values_to_grid(x: np.ndarray, z: np.ndarray, values: np.ndarray, grid: GridSpec) -> np.ndarray:
+    """Mean-aggregate ``values`` at (x, z) into ``grid``'s cells. NaN where
     no point lands in a cell (not 0 -- there's no real "no data" reading of
     exactly 0mm)."""
     n_rows, n_cols = grid.shape
     col = np.floor((x - grid.x_min) / grid.resolution_mm).astype(np.int64)
-    row = np.floor((y - grid.y_min) / grid.resolution_mm).astype(np.int64)
+    row = np.floor((z - grid.z_min) / grid.resolution_mm).astype(np.int64)
     in_bounds = (row >= 0) & (row < n_rows) & (col >= 0) & (col < n_cols)
 
     flat = row[in_bounds] * n_cols + col[in_bounds]
@@ -110,22 +118,28 @@ def bin_values_to_grid(x: np.ndarray, y: np.ndarray, values: np.ndarray, grid: G
 
 
 def sample_true_height_on_grid(
-    true_mesh: trimesh.Trimesh, sensor_config: SensorConfig, grid: GridSpec
+    true_mesh: trimesh.Trimesh, sensor_config: SensorConfig, o_r_from_o_s: Transform, grid: GridSpec
 ) -> np.ndarray:
     """Ground truth, sampled directly on ``grid``: for each cell center
-    (x, y), cast a ray along the boresight (+Z) and intersect the true mesh.
-    NaN where the ray misses."""
-    x_centers = grid.x_centers
-    y_centers = grid.y_centers
-    x_grid, y_grid = np.meshgrid(x_centers, y_centers)  # each (n_rows, n_cols)
+    (x, z) in O_r, cast a ray along O_r's +Y and intersect the true mesh
+    (transforming the ray into O_s, where the mesh is actually posed, to
+    trace it). NaN where the ray misses."""
+    o_s_from_o_r = o_r_from_o_s.invert()
 
-    z_start = float(true_mesh.bounds[0][2]) - 1.0  # comfortably "before" the mesh along +Z
-    origins = np.stack([x_grid.ravel(), y_grid.ravel(), np.full(x_grid.size, z_start)], axis=-1)
-    direction = np.array([0.0, 0.0, 1.0])
+    x_grid, z_grid = np.meshgrid(grid.x_centers, grid.z_centers)  # each (n_rows, n_cols)
 
-    locations, hit = nearest_intersection(origins, direction, true_mesh)
+    # Start comfortably "before" the mesh along O_r's Y, same pattern as the
+    # V1.1 approach (start before the mesh's own bound, cast toward it).
+    mesh_y_or = o_r_from_o_s.apply_points(true_mesh.vertices)[:, 1]
+    y_start = float(mesh_y_or.min()) - 1.0
+
+    origins_or = np.stack([x_grid.ravel(), np.full(x_grid.size, y_start), z_grid.ravel()], axis=-1)
+    origins_os = o_s_from_o_r.apply_points(origins_or)
+    direction_os = o_s_from_o_r.apply_vectors(np.array([0.0, 1.0, 0.0]))
+
+    locations_os, hit = nearest_intersection(origins_os, direction_os, true_mesh)
     heights = np.full(x_grid.size, np.nan)
-    heights[hit] = sensor_config.height_from_point(locations[hit])
+    heights[hit] = height_in_o_r(locations_os[hit], o_r_from_o_s)
     return heights.reshape(x_grid.shape)
 
 
@@ -133,10 +147,11 @@ def regrid_reconstruction_and_truth(
     result: HeightMapResult,
     true_mesh: trimesh.Trimesh,
     sensor_config: SensorConfig,
+    o_r_from_o_s: Transform,
     resolution_mm: float | None = None,
 ) -> tuple[GridSpec, np.ndarray, np.ndarray]:
     """Reconstructed height map and ground truth, regridded onto the same
-    physical XY grid (so they stay directly, cell-for-cell comparable).
+    O_r (X, Z) grid (so they stay directly, cell-for-cell comparable).
 
     Returns (grid_spec, reconstructed_height_grid, ground_truth_height_grid).
     """
@@ -146,9 +161,12 @@ def regrid_reconstruction_and_truth(
     if resolution_mm is None:
         resolution_mm = pixel_footprint_mm(sensor_config)
 
-    x, y = result.points[:, 0], result.points[:, 1]
-    grid = make_grid_spec(x, y, resolution_mm)
+    points_or = o_r_from_o_s.apply_points(result.points)
+    x, z = points_or[:, 0], points_or[:, 2]
+    grid = make_grid_spec(x, z, resolution_mm)
 
-    reconstructed = bin_values_to_grid(x, y, result.heights, grid)
-    truth = sample_true_height_on_grid(true_mesh, sensor_config, grid)
+    # result.heights is already O_r's Y component (see reconstruction.py) --
+    # binning only changes which coordinates position each value.
+    reconstructed = bin_values_to_grid(x, z, result.heights, grid)
+    truth = sample_true_height_on_grid(true_mesh, sensor_config, o_r_from_o_s, grid)
     return grid, reconstructed, truth

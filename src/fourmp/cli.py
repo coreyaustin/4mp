@@ -103,6 +103,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="outward normal (part frame) of the face to select and scan (default: 1 0 0)",
     )
     parser.add_argument(
+        "--up-axis",
+        type=float,
+        nargs=3,
+        default=(0.0, 0.0, 1.0),
+        metavar=("X", "Y", "Z"),
+        help=(
+            "the part file's own vertical/up direction (default: 0 0 1, CNC/CAM "
+            "Z-up convention) -- override for files authored with a different "
+            "native up-axis (V1.2)"
+        ),
+    )
+    parser.add_argument(
         "--step-stride",
         type=int,
         default=1,
@@ -122,6 +134,7 @@ def _scan_one(
     output_dir: Path,
     sensor_config: SensorConfig,
     face_normal_hint: tuple[float, float, float],
+    up_axis: tuple[float, float, float],
     step_stride: int,
     mirror_stride: int,
 ) -> bool:
@@ -129,12 +142,12 @@ def _scan_one(
     ``output_dir/<stl_path.stem>/``. Returns True on success."""
     print(f"loading {stl_path} ...")
     try:
-        part = load_part(stl_path, sensor_config, face_normal_hint=face_normal_hint)
+        part = load_part(stl_path, sensor_config, face_normal_hint=face_normal_hint, up_axis=up_axis)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return False
-    print(f"  face normal (part frame): {part.face_frame.normal}")
-    print(f"  theta_face: {math.degrees(part.theta_face_rad):.3f} deg")
+    print(f"  face normal (internal part frame): {part.face_frame.normal}")
+    print(f"  theta_face (yaw): {math.degrees(part.theta_face_rad):.3f} deg")
 
     print("running measurement engine (forward model) ...")
     scan = run_measurement(part.mesh, sensor_config, step_stride=step_stride, mirror_stride=mirror_stride)
@@ -148,12 +161,14 @@ def _scan_one(
         return False
 
     print("running reconstruction engine (inverse model) ...")
-    result = run_reconstruction(scan, sensor_config)
+    result = run_reconstruction(scan, sensor_config, part.o_r_from_o_s)
     n_reconstructed = int((~np.isnan(result.height_map)).sum())
     print(f"  {n_reconstructed} pixels reconstructed (camera-native), {result.collisions} pixel collisions")
 
-    print("regridding onto a physical XY grid (mm) + sampling ground truth on that grid ...")
-    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(result, part.mesh, sensor_config)
+    print("regridding onto O_r's (X, Z) plane (mm) + sampling ground truth on that grid ...")
+    grid, recon_grid, truth_grid = regrid_reconstruction_and_truth(
+        result, part.mesh, sensor_config, part.o_r_from_o_s
+    )
     print(f"  grid: {grid.shape[1]}x{grid.shape[0]} cells at {grid.resolution_mm * 1000:.1f}um/cell")
 
     print("computing validation metrics ...")
@@ -188,6 +203,7 @@ def _run_batch(
     output_dir: Path,
     sensor_config: SensorConfig,
     face_normal_hint: tuple[float, float, float],
+    up_axis: tuple[float, float, float],
     step_stride: int,
     mirror_stride: int,
 ) -> int:
@@ -206,7 +222,9 @@ def _run_batch(
     for i, stl_path in enumerate(stl_paths, start=1):
         print(f"\n[{i}/{len(stl_paths)}] {stl_path.name}")
         try:
-            ok = _scan_one(stl_path, output_dir, sensor_config, face_normal_hint, step_stride, mirror_stride)
+            ok = _scan_one(
+                stl_path, output_dir, sensor_config, face_normal_hint, up_axis, step_stride, mirror_stride
+            )
         except Exception as exc:  # one bad part shouldn't abort the whole batch
             print(f"error: unhandled exception scanning {stl_path.name}: {exc}", file=sys.stderr)
             ok = False
@@ -222,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     face_normal_hint = tuple(args.face_normal)
+    up_axis = tuple(args.up_axis)
 
     sensor_config = build_sensor_config()
 
@@ -237,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_dir / BATCH_OUTPUT_SUBDIR,
             sensor_config,
             face_normal_hint,
+            up_axis,
             args.step_stride,
             args.mirror_stride,
         )
@@ -247,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output_dir,
             sensor_config,
             face_normal_hint,
+            up_axis,
             args.step_stride,
             args.mirror_stride,
         )
@@ -260,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     ok = _scan_one(
-        stl_path, args.output_dir, sensor_config, face_normal_hint, args.step_stride, args.mirror_stride
+        stl_path, args.output_dir, sensor_config, face_normal_hint, up_axis, args.step_stride, args.mirror_stride
     )
     return 0 if ok else 1
 

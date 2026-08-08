@@ -6,12 +6,15 @@ this module just packages already-computed results into files a person can
 open, per the "output directory... reports, height maps, and any plots"
 request.
 
-**V1.1:** the primary height_map/ground_truth/residual outputs are now the
-physical-XY-grid arrays from regrid.py (mm-native axes, no camera-pixel
-keystone artifact) rather than the camera-pixel-native ``HeightMapResult``
-arrays. The camera-pixel-native triangulation-gap map is still saved
-separately, since that diagnostic is naturally per-camera-pixel (per
+**V1.1:** the primary height_map/ground_truth/residual outputs are the
+regridded arrays from regrid.py (mm-native axes, no camera-pixel keystone
+artifact) rather than the camera-pixel-native ``HeightMapResult`` arrays.
+The camera-pixel-native triangulation-gap map is still saved separately,
+since that diagnostic is naturally per-camera-pixel (per
 sensor-sim-v1-spec.md's V1.1 note to keep it available).
+
+**V1.3:** that grid is O_r's (X, Z) plane (4MP's cell-wide convention), not
+an arbitrary O_s-frame XY plane -- see regrid.py.
 """
 
 from __future__ import annotations
@@ -46,8 +49,8 @@ def _cropped_extent_mm(grid: GridSpec, row_slice: slice, col_slice: slice) -> tu
     return (
         grid.x_min + col_slice.start * res,
         grid.x_min + col_slice.stop * res,
-        grid.y_min + row_slice.start * res,
-        grid.y_min + row_slice.stop * res,
+        grid.z_min + row_slice.start * res,
+        grid.z_min + row_slice.stop * res,
     )
 
 
@@ -59,7 +62,7 @@ def _plot_grid_field(
     cmap: str = "viridis",
     center_zero: bool = False,
 ) -> None:
-    """Plot a physical-XY-grid field (mm axes, per regrid.GridSpec)."""
+    """Plot an O_r (X, Z) grid field (mm axes, per regrid.GridSpec -- V1.3)."""
     valid = ~np.isnan(data)
     if not valid.any():
         return
@@ -74,10 +77,10 @@ def _plot_grid_field(
 
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cropped, cmap=cmap, origin="lower", aspect="equal", extent=extent, **kwargs)
-    ax.set_xlabel("X, baseline axis (mm)")
-    ax.set_ylabel("Y, line axis (mm)")
+    ax.set_xlabel("X, O_r horizontal (mm)")
+    ax.set_ylabel("Z, O_r vertical (mm)")
     ax.set_title(title)
-    fig.colorbar(im, ax=ax, label="height (mm)")
+    fig.colorbar(im, ax=ax, label="height, O_r Y (mm)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -94,8 +97,8 @@ def _plot_pixel_native_field(data: np.ndarray, title: str, out_path: Path, cmap:
 
     fig, ax = plt.subplots(figsize=(6, 4))
     im = ax.imshow(cropped, cmap=cmap, origin="lower", aspect="equal")
-    ax.set_xlabel("line-axis camera pixel (cropped)")
-    ax.set_ylabel("baseline-axis camera pixel (cropped)")
+    ax.set_xlabel("camera column (O_s Z / line axis, cropped)")
+    ax.set_ylabel("camera row (O_s Y / baseline axis, cropped)")
     ax.set_title(title)
     fig.colorbar(im, ax=ax, label="triangulation gap (mm)")
     fig.tight_layout()
@@ -131,7 +134,7 @@ def save_report(
     spectral: SpectralResidual,
     sensor_config: SensorConfig,
 ) -> Path:
-    """Write height_map/ground_truth/residual (physical XY grid, mm) +
+    """Write height_map/ground_truth/residual (O_r's X-Z grid, mm) +
     camera-pixel-native gap-map diagnostic + report.json into
     ``output_dir/part_name/``. Returns that directory."""
     run_dir = Path(output_dir) / part_name
@@ -186,7 +189,7 @@ def save_report(
             if n_reconstructed_pixels
             else None,
         },
-        "physical_grid": {
+        "o_r_grid": {
             "resolution_mm": grid.resolution_mm,
             "shape": list(grid.shape),
             "extent_mm": list(grid.extent_mm),
