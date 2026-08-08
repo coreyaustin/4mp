@@ -48,9 +48,24 @@ poetry run 4mp cube_100mm
 ```
 
 Writes `output/cube_100mm/`: `height_map.npy`/`.png`, `ground_truth.npy`/
-`.png`, `residual.png`, and `report.json` (metrics + run metadata). Run
-`poetry run 4mp --help` for the full option list (face-normal selection,
-scan-resolution striding, custom input/output directories).
+`.png`, `residual.png`, `triangulation_gap_map.png`, and `report.json`
+(metrics + run metadata). Run `poetry run 4mp --help` for the full option
+list (face-normal selection, scan-resolution striding, custom input/output
+directories).
+
+## Batch-scanning multiple parts
+
+```bash
+# scan every STL in input/ -- output/<part-name>/ per part, same layout as one part
+poetry run 4mp --batch
+
+# scan every STL in an arbitrary folder -- writes <folder>/output/<part-name>/
+poetry run 4mp path/to/some/folder
+```
+
+One bad part (unreadable STL, no face matching `--face-normal`, no scan
+hits) doesn't abort the batch -- it's reported and skipped, and the exit
+code is nonzero only if at least one part failed.
 
 ## Tests
 
